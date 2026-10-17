@@ -75,6 +75,11 @@ jobs:
             adb pull /sdcard/window.xml evidence/window.xml
             adb logcat -d > evidence/logcat.txt
             test -z "$(grep 'FATAL EXCEPTION' evidence/logcat.txt)"
+            adb install apks/app-debug-androidTest.apk
+            adb shell am instrument -w -r -e class zju.bangdream.ktv.casting.DlnaDiscoveryInstrumentedTest zju.bangdream.ktv.casting.test/androidx.test.runner.AndroidJUnitRunner | tee evidence/instrumentation.txt
+            adb exec-out run-as zju.bangdream.ktv.casting cat cache/dlna-search.txt > evidence/dlna-search.txt
+            adb exec-out run-as zju.bangdream.ktv.casting cat cache/dlna-search.png > evidence/dlna-search.png
+            grep -F 'OK (1 test)' evidence/instrumentation.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
