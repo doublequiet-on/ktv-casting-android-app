@@ -1,3 +1,4 @@
+# Register fork CI workflows for diagnostic builds.
 name: Build Debug APK
 
 on:
