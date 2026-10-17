@@ -1,0 +1,83 @@
+name: Diagnostic APK install check
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Successful Debug build run ID
+        required: true
+      expected_sha:
+        description: Expected Android source commit
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.source_run }}
+          EXPECTED: ${{ inputs.expected_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/$REPO/actions/runs/$RUN" > run.json
+          python3 - <<'PY'
+          import json, os
+          run = json.load(open('run.json'))
+          assert run['head_sha'] == os.environ['EXPECTED']
+          assert run['conclusion'] == 'success'
+          PY
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+          pattern: '*.apk'
+          path: apks
+          merge-multiple: true
+      - uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: temurin
+      - name: Verify APK metadata and signatures
+        run: |
+          mkdir -p evidence
+          cp run.json evidence/
+          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          for apk in apks/*.apk; do
+            "$build_tools/apksigner" verify --verbose --print-certs "$apk" > "evidence/$(basename "$apk").signature.txt"
+            "$build_tools/aapt" dump badging "$apk" > "evidence/$(basename "$apk").metadata.txt"
+            sha256sum "$apk" >> evidence/SHA256SUMS
+          done
+          test -f apks/*-universal.apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and launch universal APK
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb install apks/*-universal.apk
+            adb logcat -c
+            adb shell am start -W -n zju.bangdream.ktv.casting/.MainActivity | tee evidence/start.txt
+            sleep 8
+            adb shell pidof zju.bangdream.ktv.casting | tee evidence/pid.txt
+            test -s evidence/pid.txt
+            adb shell screencap -p /sdcard/launch.png
+            adb pull /sdcard/launch.png evidence/launch.png
+            adb shell uiautomator dump /sdcard/window.xml
+            adb pull /sdcard/window.xml evidence/window.xml
+            adb logcat -d > evidence/logcat.txt
+            test -z "$(grep 'FATAL EXCEPTION' evidence/logcat.txt)"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: apk-install-evidence
+          path: evidence
+          retention-days: 14
